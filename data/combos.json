@@ -38,5 +38,23 @@
     "type": "infinite",
     "description": "Enchant Deceiver Exarch with Splinter Twin to create a token copy and produce infinite creatures.",
     "source": "Commander Spellbook / community"
+  },
+  {
+    "id": "combo-006",
+    "name": "Felidar Guardian + Restoration Angel",
+    "cards": ["Felidar Guardian", "Restoration Angel"],
+    "type": "infinite-blink",
+    "description": "Blink loop: cast Felidar Guardian; its ETB blinks Restoration Angel; Restoration Angel's ETB blinks Felidar Guardian; repeat to generate infinite enters/leaves triggers (and infinite flicker). Requires both creatures and a legal way to stack triggers as typical in Commander play.",
+    "notes": "A classic 2-card blink combo — detected as complete when both cards are present in the deck.",
+    "source": "User-provided / curated"
+  },
+  {
+    "id": "combo-007",
+    "name": "Gleaming Splendor + Smothering Tithe + Exalted Sunborn (Treasure loop, conditional)",
+    "cards": ["Gleaming Splendor", "Smothering Tithe", "Exalted Sunborn"],
+    "type": "treasure-loop-conditional",
+    "description": "Loop outline: activate Gleaming Splendor to force opponents to draw; Smothering Tithe triggers create Treasures when opponents don't pay; with Exalted Sunborn doubling/creating additional triggers or interaction and multiple opponents failing to pay, you can generate repeated Treasure gain and sac them for mana to replay Gleaming Splendor. This combo is conditional on opponents not paying Smothering Tithe triggers and on table state (number of opponents, triggers).",
+    "notes": "Marked conditional — analyzer will flag this as a potential combo and include the textual explanation; because it depends on opponents' choices the tool labels it 'conditional' and does not assume guaranteed infinite output.",
+    "source": "User-provided / curated"
   }
 ]
