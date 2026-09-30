@@ -1,0 +1,42 @@
+[
+  {
+    "id": "combo-001",
+    "name": "Kiki-Jiki + Zealous Conscripts",
+    "cards": ["Kiki-Jiki, Mirror Breaker", "Zealous Conscripts"],
+    "type": "infinite",
+    "description": "Kiki-Jiki can copy Zealous Conscripts to untap and create infinite combat-phase steals.",
+    "source": "Commander Spellbook / community"
+  },
+  {
+    "id": "combo-002",
+    "name": "Painter's Servant + Grindstone",
+    "cards": ["Painter's Servant", "Grindstone"],
+    "type": "mill",
+    "description": "Painter's Servant sets a color which Grindstone can use to mill the library to zero iteratively.",
+    "source": "Commander Spellbook / community"
+  },
+  {
+    "id": "combo-003",
+    "name": "Isochron Scepter + Dramatic Reversal",
+    "cards": ["Isochron Scepter", "Dramatic Reversal"],
+    "type": "infinite-mana",
+    "description": "Imprint Dramatic Reversal on Isochron Scepter with enough mana rocks to generate infinite mana.",
+    "source": "Commander Spellbook / community"
+  },
+  {
+    "id": "combo-004",
+    "name": "Deadeye Navigator + Palinchron",
+    "cards": ["Deadeye Navigator", "Palinchron"],
+    "type": "infinite-mana",
+    "description": "Soulbond or blink Palinchron with Deadeye Navigator to untap lands repeatedly and generate infinite mana.",
+    "source": "Commander Spellbook / community"
+  },
+  {
+    "id": "combo-005",
+    "name": "Splinter Twin + Deceiver Exarch (Kiki style)",
+    "cards": ["Splinter Twin", "Deceiver Exarch"],
+    "type": "infinite",
+    "description": "Enchant Deceiver Exarch with Splinter Twin to create a token copy and produce infinite creatures.",
+    "source": "Commander Spellbook / community"
+  }
+]
