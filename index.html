@@ -15,29 +15,34 @@
     button { margin-top:8px; padding:8px 12px; }
     canvas { width: 100%; height: 200px; display:block; background:#fff; border-radius:6px; }
     .stat { margin:6px 0; }
-    .card-list { max-height:180px; overflow:auto; border:1px solid #eee; padding:8px; border-radius:6px; background:#fcfcfc;}
+    .card-list { max-height:240px; overflow:auto; border:1px solid #eee; padding:8px; border-radius:6px; background:#fcfcfc;}
     .tag { display:inline-block; padding:4px 8px; margin:4px 4px 0 0; background:#eef; border-radius:999px; font-size:12px;}
     .bad { background:#fee; }
     .good { background:#efe; }
     .small { font-size:13px; color:#555; margin-top:6px;}
+    .mono { font-family: monospace; font-size:13px; }
+    .warn { color:#a33; font-weight:600; }
   </style>
 </head>
 <body>
   <h1>MTG Deck-Analysator (Canvas)</h1>
-  <p class="small">Drag & Drop einer Deckliste (plain text: z.B. "4 Lightning Bolt") oder fügen Sie den Text ein und klicken "Analysieren". Neu: Combo-DB & EDHREC-Fallback-Integration.</p>
+  <p class="small">Drag & Drop einer Deckliste (plain text: z.B. "1 Elesh Norn, Mother of Machines") oder fügen Sie den Text ein und klicken "Analysieren". Neu: Unrecognized list + verbesserte Combo-Erkennung.</p>
 
   <div id="container">
     <div id="left">
       <div id="dropzone">Ziehe eine Textdatei hierher oder klicke, um eine Deckliste einzufügen.</div>
-      <textarea id="decktext" placeholder="Beispiel:\n4 Lightning Bolt\n2 Snapcaster Mage\n1 Emrakul, the Aeons Torn\n..."></textarea>
+      <textarea id="decktext" placeholder="Beispiel:\n1 Elesh Norn, Mother of Machines\n1 Adeline, Resplendent Cathar\n1 Anti-Venom, Horrifying Healer\n..."></textarea>
       <div>
         <button id="analyzeBtn">Analysieren</button>
-        <button id="findCombosBtn">Combos finden (DB)</button>
+        <button id="findCombosBtn">Combos finden (DB + Heuristik)</button>
         <button id="clearBtn">Löschen</button>
       </div>
 
       <h3>Analyse</h3>
       <div id="summary" class="stat">Noch keine Analyse.</div>
+
+      <h4>Unrecognized / Ambiguous Einträge</h4>
+      <div id="unrecognized" class="card-list">–</div>
 
       <h4>Game Changer</h4>
       <div id="gamechangers" class="card-list">–</div>
@@ -65,85 +70,186 @@
   </div>
 
   <script>
-  // --- Kleine Kopie der vorherigen Hilfsfunktionen (parse, scryfall fetch, draw) ---
+  // --- Verbesserte Hilfsfunktionen mit Unrecognized-Reporting ---
   function parseDeckText(text) {
-    const lines = text.split(/([\r\n]+)/).map(l => l.trim()).filter(Boolean);
-    const deck = [];
-    for (let line of lines) {
-      line = line.replace(/\/\/.*$/, '').trim();
-      const m = line.match(/^(\d+)\s+x?\s+(.*)$/i);
-      if (m) { deck.push({count: parseInt(m[1],10), name:m[2].trim()}); }
-      else { deck.push({count:1, name: line}); }
+    const lines = (text||'').split(/\r?\n/).map(l => l.trim());
+    const entries = [];
+    for (let raw of lines) {
+      if (!raw) continue;
+      if (/^\s*#/i.test(raw)) continue; // comment
+      if (/^sideboard/i.test(raw)) break; // stop at sideboard if present
+      raw = raw.replace(/\/\/.*$/, '').trim();
+      const m = raw.match(/^(\d+)\s*x?\s+(.*)$/i);
+      if (m) {
+        entries.push({ name: m[2].trim(), count: parseInt(m[1],10), raw });
+      } else {
+        const m2 = raw.match(/^[xX]?(\d+)\s+(.*)$/);
+        if (m2) entries.push({ name: m2[2].trim(), count: parseInt(m2[1],10), raw });
+        else entries.push({ name: raw, count: 1, raw });
+      }
     }
     const map = new Map();
-    for (const it of deck) { const key = it.name; map.set(key, (map.get(key)||0)+it.count); }
-    return Array.from(map.entries()).map(([name,count])=>({name,count}));
+    for (const e of entries) {
+      const key = e.name.trim();
+      if (!map.has(key)) map.set(key, { name: key, count: 0, raws: [] });
+      const cur = map.get(key);
+      cur.count += e.count; cur.raws.push(e.raw);
+    }
+    return Array.from(map.values()).map(({name,count,raws})=>({name,count,raws}));
   }
 
-  async function fetchCard(name) {
-    const url = 'https://api.scryfall.com/cards/named?fuzzy=' + encodeURIComponent(name);
-    try { const res = await fetch(url); if (!res.ok) throw new Error('Scryfall: '+res.status); return await res.json(); } catch(e){ console.warn('Fehler beim Laden von',name,e); return null; }
-  }
-
-  function drawManaCurve(canvas, curve) {
-    const ctx = canvas.getContext('2d'); const w = canvas.width, h = canvas.height; ctx.clearRect(0,0,w,h);
-    const max = Math.max(1, ...curve); const padding = 20; const bars = curve.length; const barW = (w - padding*2) / bars * 0.8; const gap = ((w - padding*2) / bars) * 0.2;
-    for (let i=0;i<bars;i++){ const x = padding + i*((w-padding*2)/bars) + gap/2; const barH = (h - padding*2) * (curve[i]/max); ctx.fillStyle = '#3b82f6'; ctx.fillRect(x, h-padding-barH, barW, barH); ctx.fillStyle = '#222'; ctx.font = '12px system-ui'; ctx.fillText(i<curve.length-1? i : (curve.length-1)+'+', x, h-4); }
-    ctx.fillStyle = '#000'; ctx.font = '13px system-ui'; ctx.fillText('Mana-Kurve (CMC)', 8, 14);
-  }
-
-  function drawColorPie(canvas, colorCounts) {
-    const ctx = canvas.getContext('2d'); const w = canvas.width, h = canvas.height; ctx.clearRect(0,0,w,h); const total = Object.values(colorCounts).reduce((a,b)=>a+b,0); if(total<=0) return; const cx = w/2, cy = h/2 - 10, r = Math.min(w,h)/3; let start = -Math.PI/2; const colors = {W:'#f7f4b1', U:'#8cc7ff', B:'#bfb6c8', R:'#ffb09b', G:'#b6f0b0', C:'#ddd'};
-    for (const key of ['W','U','B','R','G','C']) {
-      const val = colorCounts[key]||0; if (val<=0) continue; const angle = (val/total) * Math.PI*2; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.fillStyle = colors[key]||'#ccc'; ctx.arc(cx,cy,r,start, start+angle); ctx.closePath(); ctx.fill(); const mid = start + angle/2; const lx = cx + Math.cos(mid)*(r+30); const ly = cy + Math.sin(mid)*(r+10); ctx.fillStyle = '#222'; ctx.font = '13px system-ui'; ctx.fillText(key + ' ' + val, lx-10, ly); start += angle; }
-    ctx.fillStyle = '#000'; ctx.font = '13px system-ui'; ctx.fillText('Farben', 8, 14);
-  }
-
-  function isGameChanger(card) {
-    if (!card) return false; const txt = (card.oracle_text||'').toLowerCase(); if (card.power && !isNaN(Number(card.power)) && Number(card.power) >= 6) return true; if (/destroy all|exile all|you win the game|take an extra turn|emrakul/i.test(card.name)) return true; if (txt.includes('destroy all') || txt.includes('exile all') || txt.includes('you win the game') || txt.includes('take an extra turn')) return true; if (card.type_line && card.type_line.toLowerCase().includes('planeswalker')) return true; if (card.type_line && card.type_line.toLowerCase().includes('legendary') && card.rarity && (card.rarity==='mythic' || card.rarity==='rare')) return true; return false;
-  }
-
-  // DOM
-  const dropzone = document.getElementById('dropzone'); const textarea = document.getElementById('decktext'); const analyzeBtn = document.getElementById('analyzeBtn'); const findCombosBtn = document.getElementById('findCombosBtn'); const clearBtn = document.getElementById('clearBtn'); const summaryDiv = document.getElementById('summary'); const gameDiv = document.getElementById('gamechangers'); const combosDiv = document.getElementById('combos'); const combosDbDiv = document.getElementById('combosDb'); const classDiv = document.getElementById('classification'); const sugDiv = document.getElementById('suggestions'); const curveCanvas = document.getElementById('curveCanvas'); const pieCanvas = document.getElementById('pieCanvas'); const edhrecLinks = document.getElementById('edhrecLinks'); const edhrecSuggestions = document.getElementById('edhrecSuggestions');
-
-  dropzone.addEventListener('click', ()=> textarea.focus()); dropzone.addEventListener('dragover', (e)=> { e.preventDefault(); dropzone.style.borderColor = '#666'; }); dropzone.addEventListener('dragleave', ()=> { dropzone.style.borderColor = '#bbb'; }); dropzone.addEventListener('drop', (e)=> { e.preventDefault(); dropzone.style.borderColor = '#bbb'; const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (!f) return; const reader = new FileReader(); reader.onload = () => { textarea.value = reader.result; }; reader.readAsText(f); });
-
-  clearBtn.addEventListener('click', ()=> { textarea.value=''; summaryDiv.innerText='Noch keine Analyse.'; gameDiv.innerText='–'; combosDiv.innerText='–'; combosDbDiv.innerText='–'; classDiv.innerText='–'; sugDiv.innerText='–'; edhrecLinks.innerText='–'; edhrecSuggestions.innerText='–'; const ctx1 = curveCanvas.getContext('2d'); ctx1.clearRect(0,0,curveCanvas.width,curveCanvas.height); const ctx2 = pieCanvas.getContext('2d'); ctx2.clearRect(0,0,pieCanvas.width,pieCanvas.height); });
-
-  analyzeBtn.addEventListener('click', async ()=> {
-    const parsed = parseDeckText(textarea.value || ''); if (parsed.length===0) { alert('Keine Kartennamen erkannt.'); return; }
-    summaryDiv.innerText = 'Lade Karteninfos von Scryfall (kann Sekunden dauern)…';
-    const deckCards = [];
-    for (let i=0;i<parsed.length;i++){ const {name,count} = parsed[i]; const card = await fetchCard(name); deckCards.push(Object.assign({count}, card || {name, oracle_text:'', type_line:'', cmc:0, colors:[], color_identity:[] })); await new Promise(r => setTimeout(r, 120)); }
-
-    let total = 0, creatureCount = 0, removalCount=0, counterCount=0, rampCount=0, tutorsCount=0; const curve = new Array(8).fill(0); const colorCountsBase = {W:0,U:0,B:0,R:0,G:0,C:0};
-    for (const c of deckCards) {
-      total += c.count; const cmc = (c.cmc || (c.card_faces && c.card_faces.reduce((a,f)=>a+(f.cmc||0),0)) || 0); const cmcIndex = Math.min(7, Math.round(cmc)); curve[cmcIndex] += c.count; if (c.type_line && c.type_line.toLowerCase().includes('creature')) creatureCount += c.count; const txt = (c.oracle_text||'').toLowerCase(); if (/destroy|exile|counter|bounce|deal .* damage|remov(e|al)|kill|sacrifice/i.test(txt) || (c.type_line||'').toLowerCase().includes('sorcery') && /destroy|exile|remove/.test(txt)) removalCount += c.count; if (/counter target|counterspell|spell can't be countered|countered/i.test(txt)) counterCount += c.count; if (/search your library|search your library for|tutor|find a card|ramp|add.*mana|rampant/i.test(txt)) { rampCount += c.count; } if (/tutor|search your library for a card|find a card|put a card from your library into your hand|library for a card named/i.test(txt)) tutorsCount += c.count; const ci = c.color_identity && c.color_identity.length? c.color_identity : (c.colors && c.colors.length? c.colors : []); if (ci.length===0) colorCountsBase.C += c.count; else { for (const ch of ci) { if (colorCountsBase[ch]!==undefined) colorCountsBase[ch] += c.count; } }
+  async function fetchCardWithFallback(name) {
+    // Return {card:object|null, strategy:'fuzzy'|'exact'|'none'}
+    async function tryNamed(q){
+      try{ const res = await fetch('https://api.scryfall.com/cards/named?fuzzy=' + encodeURIComponent(q)); if(res.ok) return await res.json(); }catch(e){}
+      return null;
+    }
+    async function tryExact(q){
+      try{ const url = 'https://api.scryfall.com/cards/search?q=' + encodeURIComponent('!"' + q + '"') + '&unique=cards'; const res = await fetch(url); if(!res.ok) return null; const js = await res.json(); if(js.data && js.data.length) return js.data[0]; }catch(e){}
+      return null;
+    }
+    async function tryTokenized(q){
+      const tok = q.normalize('NFKD').replace(/\p{Diacritic}/gu, '').replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+      if(!tok) return null;
+      try{ const url = 'https://api.scryfall.com/cards/search?q=' + encodeURIComponent(tok) + '&unique=cards'; const res = await fetch(url); if(!res.ok) return null; const js = await res.json(); if(js.data && js.data.length) return js.data[0]; }catch(e){}
+      return null;
     }
 
-    const gamechangers = deckCards.filter(c => isGameChanger(c)).map(c=>({name:c.name, count:c.count, reason: c.type_line||''}));
-    const combos = []; // heuristic combos remain as-is (minimal)
+    // try variations
+    const candidates = [name, name.replace(/\(.*\)$/,'').trim(), name.replace(/,.*$/,'').trim()];
+    for (const c of candidates) {
+      if(!c) continue;
+      const r = await tryNamed(c);
+      if(r) return { card: r, strategy: 'fuzzy' };
+    }
+    for (const c of candidates) {
+      const r = await tryExact(c);
+      if(r) return { card: r, strategy: 'exact' };
+    }
+    for (const c of candidates) {
+      const r = await tryTokenized(c);
+      if(r) return { card: r, strategy: 'token' };
+    }
+    return { card: null, strategy: 'none' };
+  }
+
+  function normalizeName(n){ if(!n) return ''; return n.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+
+  function drawManaCurve(canvas, curve) { const ctx = canvas.getContext('2d'); const w = canvas.width, h = canvas.height; ctx.clearRect(0,0,w,h); const max = Math.max(1, ...curve); const padding = 20; const bars = curve.length; const barW = (w - padding*2) / bars * 0.8; const gap = ((w - padding*2) / bars) * 0.2; for (let i=0;i<bars;i++){ const x = padding + i*((w-padding*2)/bars) + gap/2; const barH = (h - padding*2) * (curve[i]/max); ctx.fillStyle = '#3b82f6'; ctx.fillRect(x, h-padding-barH, barW, barH); ctx.fillStyle = '#222'; ctx.font = '12px system-ui'; ctx.fillText(i<curve.length-1? i : (curve.length-1)+'+', x, h-4); } ctx.fillStyle = '#000'; ctx.font = '13px system-ui'; ctx.fillText('Mana-Kurve (CMC)', 8, 14); }
+
+  function drawColorPie(canvas, colorCounts) { const ctx = canvas.getContext('2d'); const w = canvas.width, h = canvas.height; ctx.clearRect(0,0,w,h); const total = Object.values(colorCounts).reduce((a,b)=>a+b,0); if(total<=0) return; const cx = w/2, cy = h/2 - 10, r = Math.min(w,h)/3; let start = -Math.PI/2; const colors = {W:'#f7f4b1', U:'#8cc7ff', B:'#bfb6c8', R:'#ffb09b', G:'#b6f0b0', C:'#ddd'}; for (const key of ['W','U','B','R','G','C']) { const val = colorCounts[key]||0; if (val<=0) continue; const angle = (val/total) * Math.PI*2; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.fillStyle = colors[key]||'#ccc'; ctx.arc(cx,cy,r,start, start+angle); ctx.closePath(); ctx.fill(); const mid = start + angle/2; const lx = cx + Math.cos(mid)*(r+30); const ly = cy + Math.sin(mid)*(r+10); ctx.fillStyle = '#222'; ctx.font = '13px system-ui'; ctx.fillText(key + ' ' + val, lx-10, ly); start += angle; } ctx.fillStyle = '#000'; ctx.font = '13px system-ui'; ctx.fillText('Farben', 8, 14); }
+
+  function isGameChanger(card) {
+    if (!card) return false; const txt = (card.oracle_text||'').toLowerCase(); const name = (card.name||'').toLowerCase(); const decisive = ['you win the game','you win','take an extra turn','exile all','destroy all','annihilator','infinite','infinite mana','loop','game-winning']; for (const k of decisive) if (txt.includes(k) || name.includes(k)) return true; if (txt.includes('take an extra turn') || txt.includes('extra turn')) return true; if (card.power && !isNaN(Number(card.power)) && Number(card.power) >= 8) return true; if (card.type_line && /planeswalker/i.test(card.type_line)) { if (card.loyalty && !isNaN(Number(card.loyalty)) && Number(card.loyalty) >= 6) return true; const known = ['tezzeret','nicol bolas','emrakul']; for (const k of known) if (name.includes(k)) return true; } return false; }
+
+  function detectHeuristicCombos(deckCards) { const combos = []; const normNames = deckCards.map(c => ({ name: c.name, norm: normalizeName(c.name), count: c.count })); for (const a of deckCards) { if (!a.oracle_text) continue; const text = a.oracle_text.toLowerCase(); for (const b of normNames) { if (a.name === b.name) continue; const bn = b.norm.split(/\s+/).filter(Boolean); if (bn.length===0) continue; const joined = bn.join(' '); if (joined.length > 4 && text.includes(joined)) { combos.push({a: a.name, b: b.name, reason: 'Text enthält Name'}); continue; } if (bn.some(w => w.length>5 && text.includes(w))) { combos.push({a: a.name, b: b.name, reason: 'Text enthält Namensfragment'}); } } } const ded = new Set(); return combos.filter(c => { const k = [c.a,c.b].sort().join('|') + '|' + c.reason; if (ded.has(k)) return false; ded.add(k); return true; }); }
+
+  function classifyDeck(summary, hasCombos) { const s = summary; let cls = 'Mixed / Unk'; if ((s.tutorsCount > 0 || s.rampCount > 6) && s.avgCMC > 3.8 && s.creatureCount < s.total*0.35) cls = 'Combo / Ramp'; else if (s.counterCount >= 6 || (s.removalCount <= 2 && s.avgCMC > 3.5 && s.total > 50)) cls = 'Control'; else if (s.creatureCount / Math.max(1,s.total) > 0.45 && s.avgCMC <= 3.2) cls = 'Aggro'; else if (s.creatureCount / Math.max(1,s.total) > 0.25 && s.avgCMC > 3.5) cls = 'Midrange'; let score = 0; if (cls === 'Combo / Ramp') score += 2; if (cls === 'Control') score += 1; if (cls === 'Aggro') score += 0; if (s.tutorsCount >= 2) score += 1; if (s.removalCount >= 4) score += 1; if (s.counterCount >= 4) score += 1; if (hasCombos) score += 1; let bracket = 'Casual'; if (score >= 4) bracket = 'Competitive (High)'; else if (score >= 2) bracket = 'Mid-Competitive'; return { classification: cls, bracket }; }
+
+  function generateSuggestions(classification, summary, combos) { const out = []; if (classification.includes('Aggro')) { if (summary.avgCMC > 3.2) out.push('Curve senken: mehr günstige (1–2 CMC) Slots, um Konstanz zu erhöhen.'); if (summary.removalCount < 4) out.push('Mehr günstige Removal- oder Burn-Spells hinzufügen für frühe Interaktion.'); out.push('Achte auf mehr Ein- oder Zwei-CMC Kreaturen / Must-Play-Karten.'); } if (classification.includes('Control')) { if (summary.counterCount < 6) out.push('Stärkere Kontrolle: mehr Counterspell- / Boardclear-Effekte einbauen.'); if (summary.avgCMC < 3.5) out.push('Evtl. mehr Late-Game Threats / Win-Conditions für Stabilität.'); out.push('Mehr Card-Advantage (Draw / Tutors) kann helfen, langfristig zu gewinnen.'); } if (classification.includes('Combo') || classification.includes('Ramp')) { if (combos.matches.length===0 && combos.heuristic.length===0) out.push('Keine klaren Combos gefunden — prüfe bekannte Combo-Karten oder Tutor-Optionen.'); out.push('Füge Tutors oder Sicherungen (Abrufmechanismen) hinzu, um Combo-Konstanz zu erhöhen.'); } if (out.length===0) out.push('Deck sieht ausgewogen aus — prüfe Mana-Basis (Länderzahl) und Kurve für Spielstärke.'); return out; }
+
+  // --- Event-Handling / Hauptlogik ---
+  const dropzone = document.getElementById('dropzone');
+  const textarea = document.getElementById('decktext');
+  const analyzeBtn = document.getElementById('analyzeBtn');
+  const findCombosBtn = document.getElementById('findCombosBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const summaryDiv = document.getElementById('summary');
+  const unrecDiv = document.getElementById('unrecognized');
+  const gameDiv = document.getElementById('gamechangers');
+  const combosDiv = document.getElementById('combos');
+  const combosDbDiv = document.getElementById('combosDb');
+  const classDiv = document.getElementById('classification');
+  const sugDiv = document.getElementById('suggestions');
+  const curveCanvas = document.getElementById('curveCanvas');
+  const pieCanvas = document.getElementById('pieCanvas');
+  const edhrecLinks = document.getElementById('edhrecLinks');
+  const edhrecSuggestions = document.getElementById('edhrecSuggestions');
+
+  dropzone.addEventListener('click', ()=> textarea.focus());
+  dropzone.addEventListener('dragover', (e)=> { e.preventDefault(); dropzone.style.borderColor = '#666'; });
+  dropzone.addEventListener('dragleave', ()=> { dropzone.style.borderColor = '#bbb'; });
+  dropzone.addEventListener('drop', (e)=> {
+    e.preventDefault(); dropzone.style.borderColor = '#bbb'; const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (!f) return; const reader = new FileReader(); reader.onload = () => { textarea.value = reader.result; }; reader.readAsText(f);
+  });
+
+  clearBtn.addEventListener('click', ()=> { textarea.value=''; summaryDiv.innerText='Noch keine Analyse.'; unrecDiv.innerText='–'; gameDiv.innerText='–'; combosDiv.innerText='–'; combosDbDiv.innerText='–'; classDiv.innerText='–'; sugDiv.innerText='–'; edhrecLinks.innerText='–'; edhrecSuggestions.innerText='–'; const ctx1 = curveCanvas.getContext('2d'); ctx1.clearRect(0,0,curveCanvas.width,curveCanvas.height); const ctx2 = pieCanvas.getContext('2d'); ctx2.clearRect(0,0,pieCanvas.width,pieCanvas.height); });
+
+  analyzeBtn.addEventListener('click', async ()=> {
+    const parsed = parseDeckText(textarea.value || '');
+    const parsedTotal = parsed.reduce((s,p)=>s+p.count,0);
+    if (parsed.length===0) { alert('Keine Kartennamen erkannt.'); return; }
+    summaryDiv.innerText = 'Lade Karteninfos von Scryfall (kann Sekunden dauern)…';
+
+    const deckCards = [];
+    const failures = [];
+    for (let i=0;i<parsed.length;i++){
+      const {name,count} = parsed[i];
+      const res = await fetchCardWithFallback(name);
+      if(!res.card) failures.push({name, count, strategy: res.strategy});
+      deckCards.push(Object.assign({count, _fetched: !!res.card, _strategy: res.strategy}, res.card || {name, oracle_text:'', type_line:'', cmc:0, colors:[], color_identity:[] }));
+      await new Promise(r => setTimeout(r, 120));
+    }
+
+    // build summary using parsed counts
+    let total = parsedTotal, creatureCount = 0, removalCount=0, counterCount=0, rampCount=0, tutorsCount=0;
+    const curve = new Array(8).fill(0);
+    const colorCountsBase = {W:0,U:0,B:0,R:0,G:0,C:0};
+    for (const c of deckCards) {
+      const cmc = (c.cmc || (c.card_faces && c.card_faces.reduce((a,f)=>a+(f.cmc||0),0)) || 0);
+      const cmcIndex = Math.min(7, Math.round(cmc));
+      curve[cmcIndex] += c.count;
+      if (c.type_line && c.type_line.toLowerCase().includes('creature')) creatureCount += c.count;
+      const txt = (c.oracle_text||'').toLowerCase();
+      if (/\bdestroy\b|\bexile\b|\bdeal .* damage\b|\bkill\b|\bremove\b|\bremov(e|al)\b/i.test(txt)) removalCount += c.count;
+      if (/counter target|counterspell|spell can't be countered|countered/i.test(txt)) counterCount += c.count;
+      if (/search your library|search your library for|tutor|find a card|add.*mana|ramp\b|mana rock|rampant/i.test(txt)) rampCount += c.count;
+      if (/tutor|search your library for a card|find a card|put a card from your library into your hand|library for a card named/i.test(txt)) tutorsCount += c.count;
+      const ci = c.color_identity && c.color_identity.length? c.color_identity : (c.colors && c.colors.length? c.colors : []);
+      if (ci.length===0) colorCountsBase.C += c.count;
+      else { for (const ch of ci) { if (colorCountsBase[ch]!==undefined) colorCountsBase[ch] += c.count; } }
+    }
+
+    // results
+    const gamechangers = deckCards.filter(c => c._fetched && isGameChanger(c)).map(c=>({name:c.name, count:c.count, reason: c.type_line||''}));
+    const heuristicCombos = detectHeuristicCombos(deckCards);
+    const dbCombos = await window.ComboMatcher.findCombos(parsed);
+
     const avgCMC = deckCards.reduce((a,c)=> a + (c.cmc||0)*(c.count||1),0) / Math.max(1,total);
     const summary = { total, creatureCount, avgCMC: Number(avgCMC.toFixed(2)), removalCount, counterCount, rampCount, tutorsCount };
-    const classification = (function(s){ if (s.tutorsCount > 0 || s.rampCount > 6 && s.avgCMC > 4 && s.creatureCount < s.total*0.3) return 'Combo / Ramp'; if (s.counterCount >= 6 || s.removalCount<=2 && s.avgCMC>3.5 && s.total>50) return 'Control'; if (s.creatureCount / Math.max(1,s.total) > 0.4 && s.avgCMC <= 3.2) return 'Aggro'; if (s.creatureCount / Math.max(1,s.total) > 0.25 && s.avgCMC>3.5) return 'Midrange'; return 'Mixed / Unk'; })(summary);
-    const suggestions = (function(classification, summary, combos){ const out = []; if (classification.includes('Aggro')) { if (summary.avgCMC > 3.2) out.push('Curve senken: mehr günstige (1–2 CMC) Slots, um Konstanz zu erhöhen.'); if (summary.removalCount < 4) out.push('Mehr günstige Removal- oder Burn-Spells hinzufügen für frühe Interaktion.'); out.push('Achte auf mehr Ein- oder Zwei-CMC Kreaturen / Must-Play-Karten.'); } if (classification.includes('Control')) { if (summary.counterCount < 6) out.push('Stärkere Kontrolle: mehr Counterspell- / Boardclear-Effekte einbauen.'); if (summary.avgCMC < 3.5) out.push('Evtl. mehr Late-Game Threats / Win-Conditions für Stabilität.'); out.push('Mehr Card-Advantage (Draw / Tutors) kann helfen, langfristig zu gewinnen.'); } if (classification.includes('Combo') || classification.includes('Ramp')) { if (combos.length===0) out.push('Keine klaren Combos gefunden — prüfe bekannte Combo-Karten oder Tutor-Optionen.'); out.push('Füge Tutors oder Sicherungen (Abrufmechanismen) hinzu, um Combo-Konstanz zu erhöhen.'); } if (out.length===0) out.push('Deck sieht ausgewogen aus — prüfe Mana-Basis (Länderzahl) und Kurve für Spielstärke.'); return out; })(classification, summary, combos);
+    const cls = classifyDeck(summary, (dbCombos.matches.length>0 || heuristicCombos.length>0));
+    const suggestions = generateSuggestions(cls.classification, summary, { matches: dbCombos.matches, heuristic: heuristicCombos });
 
-    summaryDiv.innerHTML = `<strong>${total}</strong> Karten, Durchschnitts-CMC: <strong>${summary.avgCMC}</strong>, Kreaturen: <strong>${summary.creatureCount}</strong>`;
-    gameDiv.innerHTML = gamechangers.length? gamechangers.map(g=>`<div><strong>${g.count}× ${g.name}</strong> <em>${g.reason}</em></div>`).join('') : 'Keine automatischen Game Changer gefunden.';
-    combosDiv.innerHTML = 'Keine direkten Text‑Combos erkannt.';
-    document.getElementById('combosDb').innerText = 'Für Community-Combos: klicke "Combos finden (DB)".';
-    classDiv.innerHTML = `<div class="tag">${classification}</div> <div class="small">Heuristik basierend auf Kurve, Kreaturenanteil, Control/Combo-Indikatoren</div>`;
+    // render UI
+    summaryDiv.innerHTML = `<strong>${total}</strong> Karten (eingesendet), Durchschnitts-CMC: <strong>${summary.avgCMC}</strong>, Kreaturen: <strong>${summary.creatureCount}</strong>`;
+
+    if(failures.length){
+      unrecDiv.innerHTML = '<div class="warn">Nicht erkannte / ambigue Einträge ('+failures.length+')</div>' + failures.map(f=>`<div class="mono">${f.count}× ${f.name} <small>lookup:${f.strategy}</small></div>`).join('');
+    } else {
+      unrecDiv.innerText = 'Alle Einträge erkannt.';
+    }
+
+    gameDiv.innerHTML = gamechangers.length? gamechangers.map(g=>`<div><strong>${g.count}× ${g.name}</strong> <em>${g.reason}</em></div>`).join('') : 'Keine high-confidence Game Changer gefunden.';
+    combosDiv.innerHTML = heuristicCombos.length? heuristicCombos.map(c=>`<div>${c.a} ⇄ ${c.b} — <small>${c.reason}</small></div>`).join('') : 'Keine direkten Text‑Combos erkannt.';
+
+    if (dbCombos.matches.length || dbCombos.near.length) {
+      const lines = [];
+      if (dbCombos.matches.length) { lines.push('<strong>Vollständige Combos (DB):</strong>'); for(const m of dbCombos.matches) lines.push(`<div>${m.combo.name} — ${m.combo.cards.join(', ')}</div>`); }
+      if (dbCombos.near.length) { lines.push('<strong>Near misses (1 Karte fehlt):</strong>'); for(const n of dbCombos.near) lines.push(`<div>${n.combo.name} — fehlt: ${n.missing.join(', ')} — Vorschlag: füge ${n.missing[0]}</div>`); }
+      combosDbDiv.innerHTML = lines.join('');
+    } else combosDbDiv.innerText = 'Für Community-Combos: klicke "Combos finden (DB)".';
+
+    classDiv.innerHTML = `<div class="tag">${cls.classification}</div> <div class="small">Bracket: <strong>${cls.bracket}</strong></div>`;
     sugDiv.innerHTML = suggestions.map(s=>`<div class="small">• ${s}</div>`).join('');
 
     drawManaCurve(curveCanvas, curve);
     drawColorPie(pieCanvas, colorCountsBase);
 
-    // EDHREC fallback: provide link suggestion for likely commander (first legendary creature found)
-    const commander = deckCards.find(c => c.type_line && /legendary.*creature/i.test(c.type_line));
+    // EDHREC fallback
+    const commander = deckCards.find(c => c._fetched && c.type_line && /legendary.*creature/i.test(c.type_line));
     if(commander){
       const url = `https://edhrec.com/commanders/${encodeURIComponent(commander.name)}`;
       edhrecLinks.innerHTML = `<a href="${url}" target="_blank">EDHREC für ${commander.name}</a>`;
-      // get removal suggestions
       const colors = commander.color_identity || (commander.colors || []);
       edhrecSuggestions.innerText = 'Lade Vorschläge…';
       try{
@@ -162,16 +268,15 @@
     combosDbDiv.innerText = 'Lade Combo-DB…';
     try{
       const res = await window.ComboMatcher.findCombos(parsed);
+      const parsedCards = parsed.map(p=>({name:p.name,count:p.count}));
+      const deckCards = [];
+      for (let i=0;i<parsedCards.length;i++){ const c = await fetchCardWithFallback(parsedCards[i].name); deckCards.push(Object.assign({count: parsedCards[i].count, _fetched: !!c.card, _strategy: c.strategy}, c.card || {name: parsedCards[i].name, oracle_text: ''})); await new Promise(r=>setTimeout(r,80)); }
+      const heuristic = detectHeuristicCombos(deckCards);
       const lines = [];
-      if(res.matches.length===0 && res.near.length===0){ combosDbDiv.innerText = 'Keine Community-Combos gefunden.'; return; }
-      if(res.matches.length) {
-        lines.push('<strong>Vollständige Combos:</strong>');
-        for(const m of res.matches){ lines.push(`<div>${m.combo.name} — Typ: ${m.combo.type} — Karten: ${m.combo.cards.join(', ')}</div>`); }
-      }
-      if(res.near.length){ lines.push('<strong>1 Karte fehlt (Near misses):</strong>');
-        for(const n of res.near){ lines.push(`<div>${n.combo.name} — fehlt: ${n.missing.join(', ')} — Vorschlag: füge ${n.missing[0]} hinzu</div>`); }
-      }
-      combosDbDiv.innerHTML = lines.join('');
+      if(res.matches.length) { lines.push('<strong>Vollständige Combos (DB):</strong>'); for(const m of res.matches) lines.push(`<div>${m.combo.name} — ${m.combo.cards.join(', ')}</div>`); }
+      if(res.near.length) { lines.push('<strong>Near misses (1 Karte fehlt):</strong>'); for(const n of res.near) lines.push(`<div>${n.combo.name} — fehlt: ${n.missing.join(', ')} — Vorschlag: füge ${n.missing[0]}</div>`); }
+      if(heuristic.length) { lines.push('<strong>Heuristische Combos:</strong>'); for(const h of heuristic) lines.push(`<div>${h.a} ⇄ ${h.b} — <small>${h.reason}</small></div>`); }
+      if(lines.length===0) combosDbDiv.innerText = 'Keine Community-Combos oder heuristischen Combos gefunden.'; else combosDbDiv.innerHTML = lines.join('');
     }catch(e){ combosDbDiv.innerText = 'Fehler beim Laden der Combo-DB.'; }
   });
   </script>
